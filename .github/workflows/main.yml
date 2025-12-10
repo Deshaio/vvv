@@ -1,40 +1,135 @@
 name: VPS
 on:
   workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: 'عدد ساعات التشغيل (0 = دائم)'
+        required: true
+        default: '0'
+        type: string
+
 jobs:
   secure-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 0  # إزالة المهلة الزمنية
+    
     steps:
-      - name: Install & Configure SSH
+      - name: إنشاء SSH Key آمن
+        id: ssh_key
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/vps_key -N "" -q
+          PRIVATE_KEY=$(cat /tmp/vps_key | base64 -w 0)
+          PUBLIC_KEY=$(cat /tmp/vps_key.pub)
+          echo "PUBLIC_KEY=$PUBLIC_KEY" >> $GITHUB_ENV
+          echo "::add-mask::$PRIVATE_KEY"
+          echo "private_key=$PRIVATE_KEY" >> $GITHUB_OUTPUT
+          
+      - name: تثبيت وتكوين SSH
         run: |
           sudo apt update -y
-          sudo apt install -y openssh-server
-          sudo systemctl enable ssh
-          sudo systemctl start ssh
-          echo "root:admin@123" | sudo chpasswd
-          echo "PermitRootLogin yes" | sudo tee -a /etc/ssh/sshd_config
-          sudo service ssh restart
-          echo "✅ SSH user: root | pass: admin@123"
+          sudo apt install -y openssh-server ufw fail2ban
+          
+          # تعطيل تسجيل الدخول بكلمة المرور
+          echo "PermitRootLogin prohibit-password" | sudo tee -a /etc/ssh/sshd_config
+          echo "PasswordAuthentication no" | sudo tee -a /etc/ssh/sshd_config
+          
+          # إضافة المفتاح العام للمستخدم الحالي
+          mkdir -p ~/.ssh
+          echo "${{ env.PUBLIC_KEY }}" >> ~/.ssh/authorized_keys
+          
+          # تأمين الخادم
+          sudo ufw allow ssh
+          sudo ufw allow 41641/udp  # Tailscale
+          sudo ufw --force enable
+          
+          sudo systemctl restart ssh
+          echo "✅ SSH مكون باستخدام المصادقة بالمفتاح فقط"
 
-      - name: Install Tailscale
+      - name: تثبيت Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=vps-${{ github.run_id }}
+          sudo tailscale up \
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=vps-${{ github.run_id }} \
+            --accept-dns=false \
+            --ssh
           tsIP=$(tailscale ip -4 | head -n 1)
           echo "TAILSCALE_IP=$tsIP" >> $GITHUB_ENV
+          echo "TAILSCALE_HOSTNAME=vps-${{ github.run_id }}" >> $GITHUB_ENV
           echo "✅ Tailscale IP: $tsIP"
 
-      - name: Verify SSH Access
+      - name: تثبيت أدوات المراقبة
         run: |
-          echo "Tailscale VPS ready!"
-          echo "IP: $env:TAILSCALE_IP"
-          echo "User: root"
-          echo "Pass: admin@123"
+          sudo apt install -y htop net-tools tmux
+          echo "الخادم جاهز للمراقبة"
 
-      - name: Keep VPS Alive
+      - name: عرض معلومات الاتصال
         run: |
-          while true; do
-            echo "[$(date)] VPS running..."
-            sleep 300
-          done
+          echo "========================================="
+          echo "          🚀 VPS جاهز للاستخدام"
+          echo "========================================="
+          echo ""
+          echo "📡 معلومات الاتصال:"
+          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
+          echo "اسم المضيف: ${{ env.TAILSCALE_HOSTNAME }}"
+          echo ""
+          echo "🔑 معلومات SSH:"
+          echo "1. إستخدم: ssh root@${{ env.TAILSCALE_IP }}"
+          echo "2. أو عبر Tailscale SSH:"
+          echo "   ssh ${{ env.TAILSCALE_HOSTNAME }}"
+          echo ""
+          echo "📝 المفتاح الخاص للاتصال (Base64):"
+          echo "${{ steps.ssh_key.outputs.private_key }}"
+          echo ""
+          echo "💡 لتحويل المفتاح:"
+          echo 'echo "$KEY" | base64 -d > vps_key && chmod 600 vps_key'
+          echo 'ssh -i vps_key root@${{ env.TAILSCALE_IP }}'
+          echo "========================================="
+          echo "⏰ المدة: ${{ github.event.inputs.duration_hours }} ساعة (0 = دائم)"
+
+      - name: إبقاء الخادم نشطاً
+        id: keep_alive
+        run: |
+          # حساب المهلة الزمنية
+          DURATION=${{ github.event.inputs.duration_hours }}
+          
+          if [ "$DURATION" = "0" ]; then
+            echo "🚀 تشغيل الخادم بشكل دائم..."
+            echo "📡 جاهز للاستخدام"
+            echo ""
+            echo "🔍 معلومات الشبكة:"
+            ip a
+            echo ""
+            echo "📊 حالة النظام:"
+            tailscale status
+            echo ""
+            echo "❌ لإيقاف الخادم، ألغِ تشغيل Workflow في GitHub Actions"
+            
+            # تشغيل سجل للمراقبة
+            while true; do
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')] VPS يعمل بشكل طبيعي"
+              echo "  👤 المستخدمون النشطون: $(who | wc -l)"
+              echo "  📈 تحميل النظام: $(uptime)"
+              sleep 60
+            done
+          else
+            echo "⏱️ تشغيل الخادم لمدة $DURATION ساعة..."
+            SECONDS=$((DURATION * 3600))
+            
+            for ((i=1; i<=SECONDS/60; i++)); do
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')] VPS يعمل - الدقيقة $i/$((SECONDS/60))"
+              sleep 60
+            done
+            
+            echo "⏰ انتهت المدة الزمنية"
+          fi
+
+      - name: تنظيف قبل الإغلاق
+        if: always()
+        run: |
+          echo "🧹 تنظيف الخادم..."
+          # إزالة المفاتيح المؤقتة
+          rm -f /tmp/vps_key /tmp/vps_key.pub
+          # إيقاف Tailscale
+          sudo tailscale down || true
+          echo "✅ تم التنظيف"
