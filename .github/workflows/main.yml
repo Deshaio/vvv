@@ -1,113 +1,398 @@
-name: VPS
+name: Linux-Desktop-VPS
 on:
   workflow_dispatch:
     inputs:
-      duration_hours:
-        description: 'عدد ساعات التشغيل (0 = دائم)'
+      desktop_environment:
+        description: 'واجهة سطح المكتب'
         required: true
-        default: '0'
+        default: 'xfce'
+        type: choice
+        options:
+          - xfce
+          - gnome
+          - kde
+          - cinnamon
+          - mate
+      vnc_password:
+        description: 'كلمة مرور VNC'
+        required: true
+        default: 'linux@vps'
+        type: string
+      screen_resolution:
+        description: 'دقة الشاشة'
+        required: true
+        default: '1920x1080'
         type: string
 
 jobs:
-  secure-vps:
+  linux-desktop-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 0  # إزالة المهلة الزمنية
+    timeout-minutes: 0
     
     steps:
-      - name: إنشاء SSH Key آمن
-        id: ssh_key
+      - name: 🐧 تثبيت نظام لينكس كامل مع واجهة رسومية
         run: |
-          ssh-keygen -t ed25519 -f /tmp/vps_key -N "" -q
-          PRIVATE_KEY=$(cat /tmp/vps_key | base64 -w 0)
-          PUBLIC_KEY=$(cat /tmp/vps_key.pub)
-          echo "PUBLIC_KEY=$PUBLIC_KEY" >> $GITHUB_ENV
-          echo "::add-mask::$PRIVATE_KEY"
-          echo "private_key=$PRIVATE_KEY" >> $GITHUB_OUTPUT
-          
-      - name: تثبيت وتكوين SSH
-        run: |
+          # تحديث النظام
           sudo apt update -y
-          sudo apt install -y openssh-server ufw fail2ban
+          sudo apt full-upgrade -y
           
-          # تعطيل تسجيل الدخول بكلمة المرور
-          echo "PermitRootLogin prohibit-password" | sudo tee -a /etc/ssh/sshd_config
-          echo "PasswordAuthentication no" | sudo tee -a /etc/ssh/sshd_config
+          # تثبيت نظام لينكس كامل مع واجهة رسومية
+          echo "📦 تثبيت نظام لينكس كامل..."
           
-          # إضافة المفتاح العام للمستخدم الحالي
-          mkdir -p ~/.ssh
-          echo "${{ env.PUBLIC_KEY }}" >> ~/.ssh/authorized_keys
+          # تثبيت حزم أساسية
+          sudo apt install -y ubuntu-desktop-minimal \
+            tasksel \
+            software-properties-common \
+            apt-transport-https \
+            wget \
+            curl \
+            git \
+            net-tools \
+            build-essential
+            
+          # تثبيت واجهة سطح مكتب حسب الاختيار
+          case "${{ github.event.inputs.desktop_environment }}" in
+            "xfce")
+              sudo apt install -y xfce4 xfce4-goodies
+              echo "✅ تم تثبيت XFCE"
+              ;;
+            "gnome")
+              sudo apt install -y gnome-shell gnome-terminal gnome-tweaks
+              echo "✅ تم تثبيت GNOME"
+              ;;
+            "kde")
+              sudo apt install -y kde-plasma-desktop
+              echo "✅ تم تثبيت KDE"
+              ;;
+            "cinnamon")
+              sudo apt install -y cinnamon-desktop-environment
+              echo "✅ تم تثبيت Cinnamon"
+              ;;
+            "mate")
+              sudo apt install -y mate-desktop-environment
+              echo "✅ تم تثبيت MATE"
+              ;;
+          esac
           
-          # تأمين الخادم
-          sudo ufw allow ssh
-          sudo ufw allow 41641/udp  # Tailscale
-          sudo ufw --force enable
-          
-          sudo systemctl restart ssh
-          echo "✅ SSH مكون باستخدام المصادقة بالمفتاح فقط"
-
-      - name: تثبيت Tailscale
+          # تثبيت تطبيقات أساسية
+          echo "📦 تثبيت التطبيقات الأساسية..."
+          sudo apt install -y \
+            firefox \
+            chromium-browser \
+            vlc \
+            gimp \
+            libreoffice \
+            filezilla \
+            remmina \
+            thunderbird \
+            transmission \
+            gnome-system-monitor \
+            htop \
+            neofetch \
+            guake \
+            terminator
+            
+      - name: 🖥️ تكوين VNC للوصول عن بعد
         run: |
+          # تثبيت خادم VNC
+          sudo apt install -y tightvncserver x11vnc novnc websockify
+          
+          # إنشاء كلمة مرور VNC
+          mkdir -p ~/.vnc
+          echo "${{ github.event.inputs.vnc_password }}" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+          
+          # إنشاء سكريبت تشغيل VNC
+          cat > ~/start-vnc.sh << 'EOF'
+          #!/bin/bash
+          # إعداد دقة الشاشة
+          SCREEN_RES="${{ github.event.inputs.screen_resolution }}"
+          DEPTH="24"
+          
+          # إيقاف أي جلسة VNC قائمة
+          vncserver -kill :1 2>/dev/null
+          
+          # بدء جلسة VNC جديدة
+          vncserver :1 \
+            -geometry ${SCREEN_RES} \
+            -depth ${DEPTH} \
+            -localhost no \
+            -SecurityTypes None \
+            -AlwaysShared \
+            -AcceptKeyEvents \
+            -AcceptPointerEvents \
+            -AcceptSetDesktopSize \
+            -SendCutText \
+            -AcceptCutText
+          
+          # بدء noVNC للوصول عبر المتصفح
+          websockify -D --web=/usr/share/novnc/ 8080 localhost:5901
+          
+          echo "✅ VNC Server running on port 5901"
+          echo "🌐 Web VNC accessible at: http://localhost:8080/vnc.html"
+          EOF
+          
+          chmod +x ~/start-vnc.sh
+          
+      - name: 🌐 تثبيت وتكوين Tailscale
+        run: |
+          # تثبيت Tailscale
           curl -fsSL https://tailscale.com/install.sh | sh
+          
+          # تشغيل Tailscale
           sudo tailscale up \
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
-            --hostname=vps-${{ github.run_id }} \
-            --accept-dns=false \
-            --ssh
-          tsIP=$(tailscale ip -4 | head -n 1)
-          echo "TAILSCALE_IP=$tsIP" >> $GITHUB_ENV
-          echo "TAILSCALE_HOSTNAME=vps-${{ github.run_id }}" >> $GITHUB_ENV
-          echo "✅ Tailscale IP: $tsIP"
-
-      - name: تثبيت أدوات المراقبة
-        run: |
-          sudo apt install -y htop net-tools tmux
-          echo "الخادم جاهز للمراقبة"
-
-      - name: عرض معلومات الاتصال
-        run: |
-          echo "========================================="
-          echo "          🚀 VPS جاهز للاستخدام"
-          echo "========================================="
-          echo ""
-          echo "📡 معلومات الاتصال:"
-          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
-          echo "اسم المضيف: ${{ env.TAILSCALE_HOSTNAME }}"
-          echo ""
-          echo "🔑 معلومات SSH:"
-          echo "1. إستخدم: ssh root@${{ env.TAILSCALE_IP }}"
-          echo "2. أو عبر Tailscale SSH:"
-          echo "   ssh ${{ env.TAILSCALE_HOSTNAME }}"
-          echo ""
-          echo "📝 المفتاح الخاص للاتصال (Base64):"
-          echo "${{ steps.ssh_key.outputs.private_key }}"
-          echo ""
-          echo "💡 لتحويل المفتاح:"
-          echo 'echo "$KEY" | base64 -d > vps_key && chmod 600 vps_key'
-          echo 'ssh -i vps_key root@${{ env.TAILSCALE_IP }}'
-          echo "========================================="
-          echo "⏰ المدة: ${{ github.event.inputs.duration_hours }} ساعة (0 = دائم)"
-
-      - name: إبقاء الخادم نشطاً
-        id: keep_alive
-        run: |
-          # حساب المهلة الزمنية
-          DURATION=${{ github.event.inputs.duration_hours }}
-          
-          if [ "$DURATION" = "0" ]; then
-            echo "🚀 تشغيل الخادم بشكل دائم..."
-            echo "📡 جاهز للاستخدام"
-            echo ""
-            echo "🔍 معلومات الشبكة:"
-            ip a
-            echo ""
-            echo "📊 حالة النظام:"
-            tailscale status
-            echo ""
-            echo "❌ لإيقاف الخادم، ألغِ تشغيل Workflow في GitHub Actions"
+            --hostname=linux-desktop-${{ github.run_id }} \
+            --ssh \
+            --accept-routes
             
-            # تشغيل سجل للمراقبة
-            while true; do
-              echo "[$(date +'%Y-%m-%d %H:%M:%S')] VPS يعمل بشكل طبيعي"
+          # جلب معلومات IP
+          TAILSCALE_IP=$(tailscale ip -4)
+          MAGIC_DNS=$(tailscale status --json | jq -r '.Self.DNSName')
+          
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
+          echo "MAGIC_DNS=$MAGIC_DNS" >> $GITHUB_ENV
+          
+      - name: 🚀 بدء خدمات النظام
+        run: |
+          # تمكين واجهة المستخدم الرسومية
+          sudo systemctl set-default graphical.target
+          
+          # إنشاء ملف تكوين لـ LightDM (مدير العرض)
+          sudo cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf << EOF
+          [SeatDefaults]
+          autologin-user=$USER
+          autologin-session=${{ github.event.inputs.desktop_environment }}
+          EOF
+          
+          # بدء خدمات العرض
+          sudo systemctl start lightdm
+          sudo systemctl enable lightdm
+          
+          # بدء VNC
+          ./start-vnc.sh &
+          
+      - name: 🔧 تكوينات إضافية للينكس
+        run: |
+          # تثبيت محركات ألعاب
+          sudo apt install -y \
+            steam-installer \
+            lutris \
+            playonlinux \
+            wine-stable
+            
+          # تثبيت أدوات المطورين
+          sudo apt install -y \
+            code \
+            python3-pip \
+            nodejs \
+            npm \
+            golang \
+            openjdk-17-jdk \
+            php \
+            mysql-server \
+            postgresql \
+            docker.io \
+            docker-compose
+            
+          # إنشاء مستخدم افتراضي
+          sudo useradd -m -s /bin/bash vpsuser
+          echo "vpsuser:linux123" | sudo chpasswd
+          sudo usermod -aG sudo vpsuser
+          
+          # إعدادات مخصصة
+          echo "export EDITOR=nano" >> ~/.bashrc
+          echo "alias ll='ls -la'" >> ~/.bashrc
+          echo "alias update='sudo apt update && sudo apt upgrade -y'" >> ~/.bashrc
+          
+      - name: 🎮 تثبيت ألعاب وتطبيقات ترفيهية
+        run: |
+          # تثبيت ألعاب
+          sudo apt install -y \
+            supertuxkart \
+            0ad \
+            extremetuxracer \
+            frozen-bubble \
+            gnome-chess \
+            lbreakout2
+            
+          # تثبيت تطبيقات وسائط
+          sudo apt install -y \
+            spotify-client \
+            obs-studio \
+            audacity \
+            kdenlive \
+            handbrake
+            
+          # تثبيت أدوات الإنتاجية
+          sudo snap install slack --classic
+          sudo snap install discord
+          sudo snap install zoom-client
+          
+      - name: 🛡️ تأمين النظام
+        run: |
+          # جدار الحماية
+          sudo apt install -y ufw
+          sudo ufw allow 22
+          sudo ufw allow 5901  # VNC
+          sudo ufw allow 8080  # noVNC
+          sudo ufw --force enable
+          
+          # Fail2ban
+          sudo apt install -y fail2ban
+          sudo systemctl enable fail2ban
+          sudo systemctl start fail2ban
+          
+          # تحديث النظام الأمني
+          sudo unattended-upgrades --enable
+          
+      - name: 📡 إنشاء لوحة تحكم ويب
+        run: |
+          # تثبيت Apache + PHP
+          sudo apt install -y apache2 php libapache2-mod-php
+          
+          # إنشاء لوحة تحكم بسيطة
+          sudo cat > /var/www/html/dashboard.php << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Linux VPS Dashboard</title>
+              <style>
+                  body { font-family: Arial; background: #1a1a1a; color: white; }
+                  .container { max-width: 1200px; margin: auto; padding: 20px; }
+                  .card { background: #2d2d2d; padding: 20px; margin: 10px; border-radius: 10px; }
+                  .btn { background: #4CAF50; color: white; padding: 10px; border: none; cursor: pointer; }
+                  .status { color: #4CAF50; }
+                  .warning { color: #ff9800; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🐧 Linux VPS Dashboard</h1>
+                  
+                  <div class="card">
+                      <h2>System Status</h2>
+                      <pre><?php system('neofetch --stdout'); ?></pre>
+                  </div>
+                  
+                  <div class="card">
+                      <h2>Quick Access</h2>
+                      <button class="btn" onclick="window.open('http://localhost:8080/vnc.html', '_blank')">
+                          🖥️ Launch VNC Desktop
+                      </button>
+                      <button class="btn" onclick="window.open('http://localhost/phpmyadmin', '_blank')">
+                          🗄️ PHPMyAdmin
+                      </button>
+                  </div>
+                  
+                  <div class="card">
+                      <h2>System Info</h2>
+                      <pre>
+      CPU: <?php system('lscpu | grep "Model name" | cut -d: -f2'); ?>
+      RAM: <?php system('free -h | grep Mem | awk "{print \$2}"'); ?>
+      Disk: <?php system('df -h / | tail -1 | awk "{print \$2}"'); ?>
+      Uptime: <?php system('uptime -p'); ?>
+                      </pre>
+                  </div>
+              </div>
+          </body>
+          </html>
+          EOF
+          
+          sudo systemctl restart apache2
+          
+      - name: 📊 عرض معلومات الاتصال
+        run: |
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                🎉 LINUX DESKTOP VPS READY!                   ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║                                                              ║"
+          echo "║  🐧 نظام التشغيل: Ubuntu Desktop                            ║"
+          echo "║  🖥️  واجهة المستخدم: ${{ github.event.inputs.desktop_environment }}                 ║"
+          echo "║  📺 دقة الشاشة: ${{ github.event.inputs.screen_resolution }}                      ║"
+          echo "║                                                              ║"
+          echo "║  🔗 طرق الاتصال:                                            ║"
+          echo "║                                                              ║"
+          echo "║  1. 📡 عبر Tailscale SSH:                                   ║"
+          echo "║     ssh $USER@${{ env.MAGIC_DNS }}                           ║"
+          echo "║                                                              ║"
+          echo "║  2. 🖥️  VNC Desktop (مباشر):                                ║"
+          echo "║     عنوان: ${{ env.TAILSCALE_IP }}:5901                      ║"
+          echo "║     كلمة المرور: ${{ github.event.inputs.vnc_password }}     ║"
+          echo "║                                                              ║"
+          echo "║  3. 🌐 Web VNC (من المتصفح):                                ║"
+          echo "║     http://${{ env.TAILSCALE_IP }}:8080/vnc.html             ║"
+          echo "║                                                              ║"
+          echo "║  4. 🕸️  Web Dashboard:                                      ║"
+          echo "║     http://${{ env.TAILSCALE_IP }}/dashboard.php             ║"
+          echo "║                                                              ║"
+          echo "║  👤 بيانات الدخول:                                          ║"
+          echo "║     اسم المستخدم: vpsuser                                   ║"
+          echo "║     كلمة المرور: linux123                                   ║"
+          echo "║                                                              ║"
+          echo "║  📦 التطبيقات المثبتة:                                      ║"
+          echo "║     • Firefox, Chrome                                       ║"
+          echo "║     • LibreOffice                                           ║"
+          echo "║     • VLC Media Player                                      ║"
+          echo "║     • GIMP, Steam, Discord                                  ║"
+          echo "║     • VS Code, Docker, MySQL                                ║"
+          echo "║                                                              ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          
+          # إنشاء QR Code للاتصال السريع
+          echo "http://${{ env.TAILSCALE_IP }}:8080/vnc.html" | qrencode -t ansiutf8
+          
+      - name: ⏳ إبقاء النظام شغالاً
+        run: |
+          echo "🚀 Linux Desktop VPS is running..."
+          echo "🖥️  Desktop Environment: ${{ github.event.inputs.desktop_environment }}"
+          echo "🔗 Access via: http://${{ env.TAILSCALE_IP }}:8080/vnc.html"
+          echo ""
+          echo "📊 System monitoring started..."
+          
+          # نظام مراقبة
+          while true; do
+            echo ""
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] === System Status ==="
+            echo "👥 Active Users: $(who | wc -l)"
+            echo "💾 Memory: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}')"
+            echo "🔥 CPU Load: $(uptime | awk -F'load average:' '{print $2}')"
+            echo "📡 VNC Connections: $(netstat -an | grep :5901 | grep ESTABLISHED | wc -l)"
+            
+            # إعادة تشغيل VNC إذا توقف
+            if ! pgrep -x "Xvnc" > /dev/null; then
+              echo "⚠️  VNC stopped, restarting..."
+              ./start-vnc.sh &
+            fi
+            
+            sleep 30
+          done          echo "http://${{ env.TAILSCALE_IP }}:8080/vnc.html" | qrencode -t ansiutf8
+          
+      - name: ⏳ إبقاء النظام شغالاً
+        run: |
+          echo "🚀 Linux Desktop VPS is running..."
+          echo "🖥️  Desktop Environment: ${{ github.event.inputs.desktop_environment }}"
+          echo "🔗 Access via: http://${{ env.TAILSCALE_IP }}:8080/vnc.html"
+          echo ""
+          echo "📊 System monitoring started..."
+          
+          # نظام مراقبة
+          while true; do
+            echo ""
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] === System Status ==="
+            echo "👥 Active Users: $(who | wc -l)"
+            echo "💾 Memory: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}')"
+            echo "🔥 CPU Load: $(uptime | awk -F'load average:' '{print $2}')"
+            echo "📡 VNC Connections: $(netstat -an | grep :5901 | grep ESTABLISHED | wc -l)"
+            
+            # إعادة تشغيل VNC إذا توقف
+            if ! pgrep -x "Xvnc" > /dev/null; then
+              echo "⚠️  VNC stopped, restarting..."
+              ./start-vnc.sh &
+            fi
+            
+            sleep 30
+          d              echo "[$(date +'%Y-%m-%d %H:%M:%S')] VPS يعمل بشكل طبيعي"
               echo "  👤 المستخدمون النشطون: $(who | wc -l)"
               echo "  📈 تحميل النظام: $(uptime)"
               sleep 60
