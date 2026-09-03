@@ -23,18 +23,6 @@ on:
         required: true
         default: '1920x1080'
         type: string
-      # ✅ إضافة بسيطة: مدة تشغيل VPS
-      vps_duration:
-        description: '⏳ مدة التشغيل (ساعات، 0 = لا نهائي)'
-        required: true
-        default: '0'
-        type: string
-      # ✅ إضافة بسيطة: تثبيت أدوات إضافية
-      install_extra_tools:
-        description: '📦 تثبيت أدوات إضافية (اختياري)'
-        required: false
-        default: 'false'
-        type: boolean
 
 jobs:
   linux-desktop-vps:
@@ -60,8 +48,7 @@ jobs:
             curl \
             git \
             net-tools \
-            build-essential \
-            qrencode   # ✅ إضافة بسيطة: لتوليد QR Code
+            build-essential
             
           # تثبيت واجهة سطح مكتب حسب الاختيار
           case "${{ github.event.inputs.desktop_environment }}" in
@@ -172,7 +159,6 @@ jobs:
           sudo systemctl set-default graphical.target
           
           # إنشاء ملف تكوين لـ LightDM (مدير العرض)
-          sudo mkdir -p /etc/lightdm/lightdm.conf.d
           sudo cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf << EOF
           [SeatDefaults]
           autologin-user=$USER
@@ -180,8 +166,8 @@ jobs:
           EOF
           
           # بدء خدمات العرض
-          sudo systemctl start lightdm || true
-          sudo systemctl enable lightdm || true
+          sudo systemctl start lightdm
+          sudo systemctl enable lightdm
           
           # بدء VNC
           ./start-vnc.sh &
@@ -209,20 +195,8 @@ jobs:
             docker.io \
             docker-compose
             
-          # ✅ إضافة شرط تثبيت الأدوات الإضافية
-          if [ "${{ github.event.inputs.install_extra_tools }}" == "true" ]; then
-            echo "📦 تثبيت أدوات إضافية..."
-            sudo apt install -y \
-              nmap \
-              wireshark \
-              sqlmap \
-              hydra \
-              john \
-              aircrack-ng
-          fi
-          
           # إنشاء مستخدم افتراضي
-          sudo useradd -m -s /bin/bash vpsuser 2>/dev/null || true
+          sudo useradd -m -s /bin/bash vpsuser
           echo "vpsuser:linux123" | sudo chpasswd
           sudo usermod -aG sudo vpsuser
           
@@ -250,10 +224,10 @@ jobs:
             kdenlive \
             handbrake
             
-          # تثبيت أدوات الإنتاجية (باستخدام snap)
-          sudo snap install slack --classic || true
-          sudo snap install discord || true
-          sudo snap install zoom-client || true
+          # تثبيت أدوات الإنتاجية
+          sudo snap install slack --classic
+          sudo snap install discord
+          sudo snap install zoom-client
           
       - name: 🛡️ تأمين النظام
         run: |
@@ -266,17 +240,16 @@ jobs:
           
           # Fail2ban
           sudo apt install -y fail2ban
-          sudo systemctl enable fail2ban || true
-          sudo systemctl start fail2ban || true
+          sudo systemctl enable fail2ban
+          sudo systemctl start fail2ban
           
           # تحديث النظام الأمني
-          sudo apt install -y unattended-upgrades
-          sudo unattended-upgrades --enable || true
+          sudo unattended-upgrades --enable
           
       - name: 📡 إنشاء لوحة تحكم ويب
         run: |
           # تثبيت Apache + PHP
-          sudo apt install -y apache2 php libapache2-mod-php php-mysql
+          sudo apt install -y apache2 php libapache2-mod-php
           
           # إنشاء لوحة تحكم بسيطة
           sudo cat > /var/www/html/dashboard.php << 'EOF'
@@ -326,7 +299,7 @@ jobs:
           </html>
           EOF
           
-          sudo systemctl restart apache2 || true
+          sudo systemctl restart apache2
           
       - name: 📊 عرض معلومات الاتصال
         run: |
@@ -366,10 +339,8 @@ jobs:
           echo "║                                                              ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           
-          # توليد QR Code
-          if command -v qrencode &> /dev/null; then
-            echo "http://${{ env.TAILSCALE_IP }}:8080/vnc.html" | qrencode -t ansiutf8
-          fi
+          # إنشاء QR Code للاتصال السريع
+          echo "http://${{ env.TAILSCALE_IP }}:8080/vnc.html" | qrencode -t ansiutf8
           
       - name: ⏳ إبقاء النظام شغالاً
         run: |
@@ -379,27 +350,51 @@ jobs:
           echo ""
           echo "📊 System monitoring started..."
           
-          # الحصول على المدة المحددة
-          DURATION="${{ github.event.inputs.vps_duration }}"
-          
-          if [ "$DURATION" -eq 0 ] 2>/dev/null; then
-            echo "♾️ تشغيل VPS لأجل غير مسمى..."
+          # نظام مراقبة
+          while true; do
+            echo ""
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] === System Status ==="
+            echo "👥 Active Users: $(who | wc -l)"
+            echo "💾 Memory: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}')"
+            echo "🔥 CPU Load: $(uptime | awk -F'load average:' '{print $2}')"
+            echo "📡 VNC Connections: $(netstat -an | grep :5901 | grep ESTABLISHED | wc -l)"
             
-            # نظام مراقبة
-            while true; do
-              echo ""
-              echo "[$(date +'%Y-%m-%d %H:%M:%S')] === System Status ==="
-              echo "👥 Active Users: $(who | wc -l)"
-              echo "💾 Memory: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}')"
-              echo "🔥 CPU Load: $(uptime | awk -F'load average:' '{print $2}')"
-              echo "📡 VNC Connections: $(netstat -an 2>/dev/null | grep :5901 | grep ESTABLISHED | wc -l)"
-              
-              # إعادة تشغيل VNC إذا توقف
-              if ! pgrep -x "Xvnc" > /dev/null; then
-                echo "⚠️  VNC stopped, restarting..."
-                ./start-vnc.sh &
-              fi
-              
+            # إعادة تشغيل VNC إذا توقف
+            if ! pgrep -x "Xvnc" > /dev/null; then
+              echo "⚠️  VNC stopped, restarting..."
+              ./start-vnc.sh &
+            fi
+            
+            sleep 30
+          done          echo "http://${{ env.TAILSCALE_IP }}:8080/vnc.html" | qrencode -t ansiutf8
+          
+      - name: ⏳ إبقاء النظام شغالاً
+        run: |
+          echo "🚀 Linux Desktop VPS is running..."
+          echo "🖥️  Desktop Environment: ${{ github.event.inputs.desktop_environment }}"
+          echo "🔗 Access via: http://${{ env.TAILSCALE_IP }}:8080/vnc.html"
+          echo ""
+          echo "📊 System monitoring started..."
+          
+          # نظام مراقبة
+          while true; do
+            echo ""
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] === System Status ==="
+            echo "👥 Active Users: $(who | wc -l)"
+            echo "💾 Memory: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}')"
+            echo "🔥 CPU Load: $(uptime | awk -F'load average:' '{print $2}')"
+            echo "📡 VNC Connections: $(netstat -an | grep :5901 | grep ESTABLISHED | wc -l)"
+            
+            # إعادة تشغيل VNC إذا توقف
+            if ! pgrep -x "Xvnc" > /dev/null; then
+              echo "⚠️  VNC stopped, restarting..."
+              ./start-vnc.sh &
+            fi
+            
+            sleep 30
+          d              echo "[$(date +'%Y-%m-%d %H:%M:%S')] VPS يعمل بشكل طبيعي"
+              echo "  👤 المستخدمون النشطون: $(who | wc -l)"
+              echo "  📈 تحميل النظام: $(uptime)"
               sleep 60
             done
           else
@@ -411,15 +406,16 @@ jobs:
               sleep 60
             done
             
-            echo "⏰ انتهت المدة الزمنية المحددة"
+            echo "⏰ انتهت المدة الزمنية"
           fi
 
-      - name: 🧹 تنظيف قبل الإغلاق
+      - name: تنظيف قبل الإغلاق
         if: always()
         run: |
           echo "🧹 تنظيف الخادم..."
           # إزالة المفاتيح المؤقتة
-          rm -f /tmp/vps_key /tmp/vps_key.pub 2>/dev/null || true
+          rm -f /tmp/vps_key /tmp/vps_key.pub
           # إيقاف Tailscale
-          sudo tailscale down 2>/dev/null || true
+          sudo tailscale down || true
           echo "✅ تم التنظيف"
+
