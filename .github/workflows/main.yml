@@ -1,159 +1,119 @@
-name: Linux-Desktop-VPS
+name: Headless-Linux-VPS
 
 on:
   workflow_dispatch:
     inputs:
-      desktop_environment:
-        description: 'واجهة سطح المكتب'
+      vps_username:
+        description: 'اسم المستخدم للـ VPS'
         required: true
-        default: 'xfce'
-        type: choice
-        options:
-          - xfce
-          - gnome
-          - kde
-          - cinnamon
-          - mate
-      vnc_password:
-        description: 'كلمة مرور VNC'
-        required: true
-        default: 'linux@vps'
+        default: 'vpsuser'
         type: string
-      screen_resolution:
-        description: 'دقة الشاشة'
+      vps_password:
+        description: 'كلمة مرور المستخدم'
         required: true
-        default: '1280x720'
+        default: 'vps123456'
         type: string
 
 jobs:
-  linux-desktop-vps:
+  headless-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # الحد الأقصى المسموح به للتشغيل
+    timeout-minutes: 360 # الحد الأقصى 6 ساعات
     
     steps:
-      - name: 🐧 تثبيت نظام لينكس مع واجهة رسومية خفيفة
+      - name: 🐧 تجهيز نظام VPS نصي خفيف
         run: |
           sudo apt update -y
-          sudo apt full-upgrade -y
+          sudo apt upgrade -y
           
-          # تثبيت حزم أساسية خفيفة لسرعة الإقلاع
-          sudo apt install -y wget curl git net-tools build-essential qrencode
+          # تثبيت الأدوات الأساسية فقط بدون أي واجهة رسومية
+          sudo apt install -y \
+            curl \
+            wget \
+            git \
+            net-tools \
+            htop \
+            ufw \
+            fail2ban \
+            python3-pip \
+            nodejs \
+            npm \
+            docker.io \
+            docker-compose \
+            jq \
+            qrencode
             
-          # تثبيت واجهة سطح مكتب حسب الاختيار (نُفضل XFCE لسرعتها وخفة مواردها)
-          case "${{ github.event.inputs.desktop_environment }}" in
-            "xfce")
-              sudo apt install -y xfce4 xfce4-goodies
-              ;;
-            "gnome")
-              sudo apt install -y gnome-shell gnome-terminal
-              ;;
-            "kde")
-              sudo apt install -y kde-plasma-desktop
-              ;;
-            "cinnamon")
-              sudo apt install -y cinnamon-desktop-environment
-              ;;
-            "mate")
-              sudo apt install -y mate-desktop-environment
-              ;;
-          esac
-          
-          # تثبيت متصفح خفيف وأدوات أساسية
-          sudo apt install -y firefox htop terminator
-            
-      - name: 🖥️ تكوين VNC والوصول عن بعد
+      - name: 👤 إنشاء المستخدم وإعداد الصلاحيات
         run: |
-          sudo apt install -y tightvncserver x11vnc novnc websockify
+          # إنشاء مستخدم جديد لمنع استخدام الحساب الجذر (root) مباشرة للأمان
+          sudo useradd -m -s /bin/bash ${{ github.event.inputs.vps_username }}
+          echo "${{ github.event.inputs.vps_username }}:${{ github.event.inputs.vps_password }}" | sudo chpasswd
+          sudo usermod -aG sudo ${{ github.event.inputs.vps_username }}
           
-          mkdir -p ~/.vnc
-          echo "${{ github.event.inputs.vnc_password }}" | vncpasswd -f > ~/.vnc/passwd
-          chmod 600 ~/.vnc/passwd
+          # إعدادات بسيطة لملف الـ bash للمستخدم الجديد
+          sudo -u ${{ github.event.inputs.vps_username }} bash -c '
+            echo "export EDITOR=nano" >> ~/.bashrc
+            echo "alias ll=\"ls -la\"" >> ~/.bashrc
+            echo "alias update=\"sudo apt update && sudo apt upgrade -y\"" >> ~/.bashrc
+          '
           
-          cat > ~/start-vnc.sh << 'EOF'
-          #!/bin/bash
-          SCREEN_RES="${{ github.event.inputs.screen_resolution }}"
-          DEPTH="24"
-          
-          vncserver -kill :1 2>/dev/null
-          
-          vncserver :1 \
-            -geometry ${SCREEN_RES} \
-            -depth ${DEPTH} \
-            -localhost no \
-            -SecurityTypes None \
-            -AlwaysShared
-          
-          websockify -D --web=/usr/share/novnc/ 8080 localhost:5901
-          
-          echo "✅ VNC Server running on port 5901"
-          echo "🌐 Web VNC accessible at: http://localhost:8080/vnc.html"
-          EOF
-          
-          chmod +x ~/start-vnc.sh
-          
-      - name: 🌐 تثبيت وتكوين Tailscale
+      - name: 🌐 تثبيت وتكوين شبكة Tailscale الآمنة
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           
+          # تشغيل Tailscale وتفعيل ميزة الـ SSH مباشرة
           sudo tailscale up \
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
-            --hostname=linux-desktop-${{ github.run_id }} \
-            --ssh \
-            --accept-routes
+            --hostname=headless-vps-${{ github.run_id }} \
+            --ssh
             
-          TAILSCALE_IP=$(tailscale ip -4)
+          # استخراج معلومات الاتصال
           MAGIC_DNS=$(tailscale status --json | jq -r '.Self.DNSName')
+          TAILSCALE_IP=$(tailscale ip -4)
           
-          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
           echo "MAGIC_DNS=$MAGIC_DNS" >> $GITHUB_ENV
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
           
-      - name: 🚀 بدء خدمات النظام و VNC
+      - name: 🛡️ تأمين الخادم (Firewall)
         run: |
-          ./start-vnc.sh &
+          sudo ufw allow 22
+          sudo ufw --force enable
+          sudo systemctl enable fail2ban
+          sudo systemctl start fail2ban
           
-      - name: 📊 عرض معلومات الاتصال
+      - name: 📊 عرض معلومات الاتصال النهائية
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║                🎉 LINUX DESKTOP VPS READY!                   ║"
+          echo "║                🎉 HEADLESS LINUX VPS READY!                  ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║                                                              ║"
-          echo "║  🐧 نظام التشغيل: Ubuntu Desktop                            ║"
-          echo "║  🖥️  واجهة المستخدم: ${{ github.event.inputs.desktop_environment }}                 ║"
-          echo "║  📺 دقة الشاشة: ${{ github.event.inputs.screen_resolution }}                      ║"
+          echo "║  🐧 النظام: Ubuntu Server (نصي بالكامل - خفيف وسريع)          ║"
           echo "║                                                              ║"
-          echo "║  🔗 طرق الاتصال:                                            ║"
-          echo "║  1. 🌐 Web VNC (من المتصفح عبر Tailscale):                  ║"
-          echo "║     http://${{ env.TAILSCALE_IP }}:8080/vnc.html             ║"
-          echo "║     كلمة المرور: ${{ github.event.inputs.vnc_password }}     ║"
+          echo "║  🔗 طريقة الاتصال عبر SSH (من خلال Tailscale):                ║"
+          echo "║     ssh ${{ github.event.inputs.vps_username }}@${{ env.MAGIC_DNS }}                       ║"
+          echo "║     أو عبر الأبّي:                                           ║"
+          echo "║     ssh ${{ github.event.inputs.vps_username }}@${{ env.TAILSCALE_IP }}                    ║"
           echo "║                                                              ║"
-          echo "║  2. 📡 عبر Tailscale SSH:                                   ║"
-          echo "║     ssh $USER@${{ env.MAGIC_DNS }}                           ║"
+          echo "║  🔑 كلمة المرور: ${{ github.event.inputs.vps_password }}     ║"
+          echo "║                                                              ║"
+          echo "║  📦 الأدوات المثبتة مسبقاً:                                 ║"
+          echo "║     • Python3, Pip, Node.js, npm                             ║"
+          echo "║     • Docker & Docker Compose                                ║"
+          echo "║     • Git, Htop, UFW, Fail2ban                               ║"
           echo "║                                                              ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           
-          echo "http://${{ env.TAILSCALE_IP }}:8080/vnc.html" | qrencode -t ansiutf8
-          
-      - name: ⏳ إبقاء النظام شغالاً ومراقبة الأداء
+      - name: ⏳ إبقاء السيرفر قيد التشغيل والمراقبة
         run: |
-          echo "🚀 Linux Desktop VPS is running..."
+          echo "🚀 Headless VPS is running and ready for your agents/scripts..."
           
           while true; do
-            echo "[$(date +'%Y-%m-%d %H:%M:%S')] VPS يعمل بشكل طبيعي..."
-            echo "  💾 الذاكرة العشوائية: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}')"
-            echo "  🔥 تحميل المعالج: $(uptime | awk -F'load average:' '{print $2}')"
-            
-            # إعادة تشغيل VNC تلقائياً إذا توقف
-            if ! pgrep -x "Xvnc" > /dev/null; then
-              echo "⚠️  VNC توقف، يتم إعادة تشغيله..."
-              ./start-vnc.sh &
-            fi
-            
-            sleep 60
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] VPS يعمل بصحة جيدة - الذاكرة المستخدمة: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}')"
+            sleep 120
           done
 
-      - name: تنظيف قبل الإغلاق
+      - name: تنظيف وإيقاف التشغيل
         if: always()
         run: |
           echo "🧹 إيقاف وتطهير النظام..."
           sudo tailscale down || true
-          echo "✅ تم التنظيف بنجاح"
+          echo "✅ تم التنظيف"
