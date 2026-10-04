@@ -1,119 +1,72 @@
-name: Headless-Linux-VPS
+name: Ultra-Light-VPS
 
 on:
   workflow_dispatch:
     inputs:
       vps_username:
-        description: 'اسم المستخدم للـ VPS'
+        description: 'اسم المستخدم'
         required: true
         default: 'vpsuser'
         type: string
       vps_password:
-        description: 'كلمة مرور المستخدم'
+        description: 'كلمة المرور'
         required: true
         default: 'vps123456'
         type: string
 
 jobs:
-  headless-vps:
+  light-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # الحد الأقصى 6 ساعات
+    timeout-minutes: 360
     
     steps:
-      - name: 🐧 تجهيز نظام VPS نصي خفيف
+      - name: 🪶 تثبيت الحد الأدنى المطلق للنظام
         run: |
+          # تحديث سريع وتثبيت الأدوات الحيوية فقط بدون أي زوائد
           sudo apt update -y
-          sudo apt upgrade -y
-          
-          # تثبيت الأدوات الأساسية فقط بدون أي واجهة رسومية
-          sudo apt install -y \
-            curl \
-            wget \
-            git \
-            net-tools \
-            htop \
-            ufw \
-            fail2ban \
-            python3-pip \
-            nodejs \
-            npm \
-            docker.io \
-            docker-compose \
-            jq \
-            qrencode
+          sudo apt install -y curl wget git htop python3-pip jq qrencode
             
-      - name: 👤 إنشاء المستخدم وإعداد الصلاحيات
+      - name: 👤 إنشاء المستخدم
         run: |
-          # إنشاء مستخدم جديد لمنع استخدام الحساب الجذر (root) مباشرة للأمان
           sudo useradd -m -s /bin/bash ${{ github.event.inputs.vps_username }}
           echo "${{ github.event.inputs.vps_username }}:${{ github.event.inputs.vps_password }}" | sudo chpasswd
           sudo usermod -aG sudo ${{ github.event.inputs.vps_username }}
           
-          # إعدادات بسيطة لملف الـ bash للمستخدم الجديد
-          sudo -u ${{ github.event.inputs.vps_username }} bash -c '
-            echo "export EDITOR=nano" >> ~/.bashrc
-            echo "alias ll=\"ls -la\"" >> ~/.bashrc
-            echo "alias update=\"sudo apt update && sudo apt upgrade -y\"" >> ~/.bashrc
-          '
-          
-      - name: 🌐 تثبيت وتكوين شبكة Tailscale الآمنة
+      - name: 🌐 ربط شبكة Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          
-          # تشغيل Tailscale وتفعيل ميزة الـ SSH مباشرة
           sudo tailscale up \
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
-            --hostname=headless-vps-${{ github.run_id }} \
+            --hostname=ultra-vps-${{ github.run_id }} \
             --ssh
             
-          # استخراج معلومات الاتصال
-          MAGIC_DNS=$(tailscale status --json | jq -r '.Self.DNSName')
-          TAILSCALE_IP=$(tailscale ip -4)
+          echo "MAGIC_DNS=$(tailscale status --json | jq -r '.Self.DNSName')" >> $GITHUB_ENV
+          echo "TAILSCALE_IP=$(tailscale ip -4)" >> $GITHUB_ENV
           
-          echo "MAGIC_DNS=$MAGIC_DNS" >> $GITHUB_ENV
-          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
-          
-      - name: 🛡️ تأمين الخادم (Firewall)
-        run: |
-          sudo ufw allow 22
-          sudo ufw --force enable
-          sudo systemctl enable fail2ban
-          sudo systemctl start fail2ban
-          
-      - name: 📊 عرض معلومات الاتصال النهائية
+      - name: 📊 معلومات الاتصال
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║                🎉 HEADLESS LINUX VPS READY!                  ║"
+          echo "║                  🪶 ULTRA-LIGHT VPS READY!                   ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║                                                              ║"
-          echo "║  🐧 النظام: Ubuntu Server (نصي بالكامل - خفيف وسريع)          ║"
-          echo "║                                                              ║"
-          echo "║  🔗 طريقة الاتصال عبر SSH (من خلال Tailscale):                ║"
+          echo "║  🔗 اتصال SSH السريع:                                        ║"
           echo "║     ssh ${{ github.event.inputs.vps_username }}@${{ env.MAGIC_DNS }}                       ║"
           echo "║     أو عبر الأبّي:                                           ║"
           echo "║     ssh ${{ github.event.inputs.vps_username }}@${{ env.TAILSCALE_IP }}                    ║"
           echo "║                                                              ║"
           echo "║  🔑 كلمة المرور: ${{ github.event.inputs.vps_password }}     ║"
           echo "║                                                              ║"
-          echo "║  📦 الأدوات المثبتة مسبقاً:                                 ║"
-          echo "║     • Python3, Pip, Node.js, npm                             ║"
-          echo "║     • Docker & Docker Compose                                ║"
-          echo "║     • Git, Htop, UFW, Fail2ban                               ║"
-          echo "║                                                              ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           
-      - name: ⏳ إبقاء السيرفر قيد التشغيل والمراقبة
+      - name: ⏳ تشغيل دائم والمراقبة
         run: |
-          echo "🚀 Headless VPS is running and ready for your agents/scripts..."
-          
+          echo "🚀 VPS يعمل الآن بأقل استهلاك ممكن للموارد..."
           while true; do
-            echo "[$(date +'%Y-%m-%d %H:%M:%S')] VPS يعمل بصحة جيدة - الذاكرة المستخدمة: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}')"
             sleep 120
           done
 
-      - name: تنظيف وإيقاف التشغيل
+      - name: تنظيف
         if: always()
         run: |
-          echo "🧹 إيقاف وتطهير النظام..."
           sudo tailscale down || true
           echo "✅ تم التنظيف"
